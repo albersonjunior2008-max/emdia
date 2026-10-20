@@ -110,6 +110,7 @@ h1{margin:0;font-size:clamp(36px,6vw,56px);line-height:1.02;font-weight:800;lett
 .empty p.s{margin:14px 0 24px;color:var(--muted);font-size:16px}
 .empty .link{margin-top:20px;display:inline-flex;align-items:center;gap:10px;background:none;border:0;font-weight:700;font-size:15px;padding:4px}
 .empty .link:hover{text-decoration:underline}
+.empty .link.alt{margin-top:4px;font-weight:600;font-size:14px;color:var(--muted)}
 .empty.small{padding:30px 18px}
 .empty.small h3{font-size:22px}
 .empty.small p.s{margin:10px 0 18px;font-size:14.5px}
@@ -261,7 +262,8 @@ dialog form{padding:22px 22px 20px}
       <h2>Tudo no seu radar</h2>
       <span class="pill" id="countPill">0 tarefas</span>
       <div class="tools">
-        <button class="exp" data-act="export" id="btnExport" title="Baixar todas as tarefas em planilha (CSV, abre no Excel)"></button>
+        <button class="exp" data-act="import" id="btnImport" title="Trazer tarefas de uma planilha CSV gerada pelo botão Exportar"></button>
+        <button class="exp" data-act="export" id="btnExport" title="Baixar todas as tarefas em planilha (CSV, abre no Excel). Serve também como cópia de segurança."></button>
         <div class="seg" role="group" aria-label="Modo de exibição">
           <button data-act="mode" data-mode="lista" id="modeLista"></button>
           <button data-act="mode" data-mode="quadro" id="modeQuadro"></button>
@@ -358,6 +360,7 @@ dialog form{padding:22px 22px 20px}
   </form>
 </dialog>
 
+<input type="file" id="fileImport" accept=".csv,.txt,text/csv" hidden>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -391,6 +394,7 @@ const P = {
   x:'<path d="M18 6 6 18M6 6l12 12"/>',
   plus:'<path d="M5 12h14M12 5v14"/>',
   download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/>',
+  upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/>',
   list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
   kanban:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v3M16 7v10"/>',
   pencil:'<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
@@ -506,6 +510,7 @@ function renderStatic() {
   $('#btnNew').innerHTML = ic('plus', 18) + 'Nova tarefa';
   $('#btnNewCat').innerHTML = ic('plus', 18) + 'Nova categoria';
   $('#btnExport').innerHTML = ic('download', 17) + 'Exportar';
+  $('#btnImport').innerHTML = ic('upload', 17) + 'Importar';
   $('#modeLista').innerHTML = ic('list', 17) + 'Lista';
   $('#modeQuadro').innerHTML = ic('kanban', 17) + 'Quadro';
   $('#icSearch').innerHTML = ic('search', 20);
@@ -613,6 +618,7 @@ function renderResults() {
       <p class="s">O que você quer tirar do papel hoje?</p>
       <button class="btn lg" data-act="new-task">${ic('plus', 20)}Criar primeira tarefa</button>
       <button class="link" data-act="examples">Experimentar com exemplos ${ic('arrow', 18)}</button>
+      <button class="link alt" data-act="import">Já tinha tarefas salvas? Importar planilha ${ic('upload', 16)}</button>
     </div>`;
   } else if (!list.length) {
     box.innerHTML = `<div class="empty small">
@@ -784,6 +790,83 @@ function exportCsv() {
   toast('Planilha exportada.');
 }
 
+/* --- importar CSV (o mesmo que o botão Exportar gera) --- */
+function parseCsv(text, d) {
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === d) { row.push(cur); cur = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cur); cur = ''; rows.push(row); row = []; }
+    else cur += c;
+  }
+  if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(x => String(x).trim() !== ''));
+}
+function brToIso(s) {
+  s = String(s || '').trim();
+  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${pad(+m[2])}-${pad(+m[1])}`;
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+}
+function importCsv(text) {
+  text = text.replace(/^﻿/, '');
+  const first = text.split(/\r?\n/, 1)[0] || '';
+  const delim = first.split(';').length >= first.split(',').length ? ';' : ',';
+  const rows = parseCsv(text, delim);
+  if (rows.length < 2) return null;
+  const head = rows[0].map(norm), col = n => head.indexOf(n);
+  const iT = col('titulo'); if (iT < 0) return null;
+  const iN = col('descricao'), iC = col('categoria'), iP = col('prioridade'), iS = col('status'), iD = col('prazo'), iCr = col('criada em'), iCo = col('concluida em');
+  const get = (r, i) => i >= 0 ? String(r[i] ?? '').trim() : '';
+  const key = t => norm(t.title) + '|' + (t.due || '') + '|' + t.status;
+  const seen = new Set(data.tasks.map(key));
+  let added = 0, skipped = 0;
+  for (const r of rows.slice(1)) {
+    const title = get(r, iT); if (!title) continue;
+    const ps = norm(get(r, iP)), prio = ps === 'alta' ? 'alta' : ps === 'baixa' ? 'baixa' : 'media';
+    const ss = norm(get(r, iS)), st = STATUS.find(s => norm(s.label) === ss || norm(s.plural) === ss);
+    const status = st ? st.id : 'aberto';
+    const catTxt = get(r, iC); let cat = '';
+    if (catTxt && norm(catTxt) !== 'sem categoria') {
+      let c = data.categories.find(x => norm(x.name) === norm(catTxt));
+      if (!c) { c = {id: uid(), name: catTxt, color: COLORS[data.categories.length % COLORS.length]}; data.categories.push(c); }
+      cat = c.id;
+    }
+    const cr = brToIso(get(r, iCr)), co = brToIso(get(r, iCo)), nowIso = new Date().toISOString();
+    const t = {id: uid(), title, notes: get(r, iN), cat, prio, status, due: brToIso(get(r, iD)),
+      createdAt: cr ? new Date(cr + 'T12:00:00').toISOString() : nowIso,
+      completedAt: status === 'concluida' ? (co ? new Date(co + 'T12:00:00').toISOString() : nowIso) : null};
+    if (seen.has(key(t))) { skipped++; continue; }
+    seen.add(key(t)); data.tasks.push(t); added++;
+  }
+  save();
+  Object.assign(f, {q:'', cat:'', prio:'', due:'', status:'todas'}); $('#q').value = '';
+  renderAll();
+  return {added, skipped};
+}
+function finishImport(txt) {
+  const res = importCsv(txt);
+  if (!res) toast('Não reconheci esse arquivo. Use a planilha gerada pelo botão Exportar.');
+  else if (!res.added) toast(res.skipped ? 'Essas tarefas já estavam aqui.' : 'Não encontrei tarefas nessa planilha.');
+  else toast(`${res.added} ${res.added === 1 ? 'tarefa importada' : 'tarefas importadas'}` + (res.skipped ? ` (${res.skipped} já ${res.skipped === 1 ? 'existia' : 'existiam'})` : '') + '.');
+}
+$('#fileImport').addEventListener('change', e => {
+  const input = e.target, file = input.files && input.files[0]; if (!file) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    const txt = String(rd.result || '');
+    if (txt.includes('�')) {                      // planilha salva pelo Excel em ANSI
+      const r2 = new FileReader();
+      r2.onload = () => { finishImport(String(r2.result || '')); input.value = ''; };
+      r2.readAsText(file, 'windows-1252');
+    } else { finishImport(txt); input.value = ''; }
+  };
+  rd.readAsText(file, 'utf-8');
+});
+
 /* ============ eventos ============ */
 document.addEventListener('click', e => {
   if (e.target === dlgTask || e.target === dlgCat) { e.target.close(); return; }
@@ -814,6 +897,7 @@ document.addEventListener('click', e => {
     case 'clear': Object.assign(f, {q:'', cat:'', prio:'', due:'', status:'todas'}); $('#q').value = ''; renderAll(); break;
     case 'mode': data.view = el.dataset.mode; save(); renderAll(); break;
     case 'export': exportCsv(); break;
+    case 'import': $('#fileImport').click(); break;
     case 'examples': loadExamples(); break;
     case 'due-quick': {
       const v = el.dataset.v;
